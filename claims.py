@@ -14,6 +14,8 @@ from typing import Literal
 from pydantic import BaseModel, ValidationError, field_validator
 from groq import Groq
 from dotenv import load_dotenv
+import time
+from logging_utils import logger
 
 load_dotenv()
 
@@ -30,6 +32,7 @@ class Claim(BaseModel):
     end_time: str
     category: Literal["Science", "Health", "Technology", "History", "General"]
     importance: Literal["high", "medium", "low"]
+    search_queries: list[str] = []
 
     @field_validator("claim_text")
     @classmethod
@@ -37,6 +40,12 @@ class Claim(BaseModel):
         if not v.strip():
             raise ValueError("claim_text cannot be empty")
         return v.strip()
+
+    @field_validator("search_queries")
+    @classmethod
+    def cap_queries(cls, v):
+        # keep at most 3, and fall back gracefully if the model omitted them
+        return v[:3] if v else []
 
 
 SYSTEM_PROMPT = """You are a claim extraction assistant for a fact-checking tool.
@@ -62,11 +71,23 @@ For each claim you extract, return:
   came from. Must be real segment numbers from the transcript you were given.
 - "category": one of exactly: "Science", "Health", "Technology", "History", "General"
 - "importance": one of exactly: "high", "medium", "low"
+- "search_queries": exactly 3 short web search queries that would help verify or
+  refute this specific claim. Target the SPECIFIC named entities, places, people,
+  or measurements in the claim rather than generic phrasing. If the claim names
+  something unusual (an obscure place/lake/person/statistic that may have been
+  mis-transcribed from audio), make one query the exact name alone, and one query
+  a plausible alternate spelling or transliteration of that name.
 
 Return ONLY a JSON array, no other text, no markdown formatting, no code fences.
 Example format:
 [
-  {"claim_text": "...", "segment_indices": [2,3], "category": "Science", "importance": "high"}
+  {
+    "claim_text": "...",
+    "segment_indices": [2,3],
+    "category": "Science",
+    "importance": "high",
+    "search_queries": ["query one", "query two", "query three"]
+  }
 ]
 
 If there are no checkable factual claims in the transcript, return an empty array: []
@@ -82,16 +103,37 @@ def _build_numbered_transcript(segments: list[dict]) -> str:
 
 
 def _call_llm(numbered_transcript: str) -> str:
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": numbered_transcript},
-        ],
-        temperature=0.1,
-        max_tokens=1500,
+    logger.info(
+        "GROQ call | stage=claim_extraction | model=%s | input_chars=%d",
+        MODEL,
+        len(numbered_transcript),
     )
-    return response.choices[0].message.content.strip()
+
+    start = time.time()
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": numbered_transcript},
+            ],
+            temperature=0.1,
+            max_tokens=1500,
+        )
+
+        elapsed = time.time() - start
+
+        logger.info(
+            "GROQ success | stage=claim_extraction | duration=%.2fs",
+            elapsed,
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception:
+        logger.exception("GROQ failure | stage=claim_extraction")
+        raise
 
 
 def _strip_code_fences(text: str) -> str:
@@ -154,14 +196,29 @@ def extract_claims(segments: list[dict]) -> list[Claim]:
         real_start = min(seg["start_str"] for seg in referenced_segments)
         real_end = max(seg["end_str"] for seg in referenced_segments)
 
+        claim_text = c.get("claim_text", "")
+        raw_queries = c.get("search_queries", [])
+        if not (isinstance(raw_queries, list) and all(isinstance(q, str) and q.strip() for q in raw_queries)):
+            raw_queries = []
+
+        # Fallback so search.py always has something usable even if the model
+        # skipped this field on a given claim.
+        if not raw_queries:
+            raw_queries = [
+                claim_text,
+                f"{claim_text} fact check",
+                f"is it true that {claim_text.lower()}",
+            ]
+
         try:
             claim = Claim(
                 claim_id=claim_id,
-                claim_text=c.get("claim_text", ""),
+                claim_text=claim_text,
                 start_time=real_start,
                 end_time=real_end,
                 category=c.get("category"),
                 importance=c.get("importance", "medium"),
+                search_queries=raw_queries,
             )
         except ValidationError:
             continue  # skip malformed claim rather than crash

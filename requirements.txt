@@ -1,0 +1,8 @@
+streamlit
+pydantic
+groq
+python-dotenv
+tavily-python
+yt-dlp
+faster-whisper
+youtube-transcript-api

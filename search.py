@@ -10,22 +10,23 @@ matters for claims that assert a specific named entity exists.
 """
 
 import os
-import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from pydantic import BaseModel
 from tavily import TavilyClient
-from groq import Groq
 from dotenv import load_dotenv
 
 from trusted_sources import score_credibility
+from logging_utils import logger
 
 load_dotenv()
 
 tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 MAX_RESULTS_PER_QUERY = 3
 MAX_SOURCES_PER_CLAIM = 5
+MAX_CONCURRENT_SEARCHES = 2
 
 
 class Source(BaseModel):
@@ -37,52 +38,17 @@ class Source(BaseModel):
     credibility_tier: int = 5
 
 
-def _strip_code_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = [l for l in text.split("\n") if not l.strip().startswith("```")]
-        text = "\n".join(lines)
-    return text.strip()
-
-
-def _generate_queries(claim_text: str, category: str) -> list[str]:
+def _fallback_queries(claim_text: str) -> list[str]:
     """
-    Ask the LLM for 3 targeted, verification-oriented search queries, focused
-    on the SPECIFIC named entities/facts in the claim. If the claim names an
-    unusual/uncommon proper noun (a place, person, study), include at least
-    one query that searches for that exact name plus one plausible alternate
-    spelling — since transcription/subtitle errors are common in short-form
-    video (e.g. "Naita-Cainan" is very likely a mis-transcribed real name).
+    Used only if a claim reaches this function with no queries attached.
+    Normal path: queries are generated during claim extraction, so this
+    function no longer makes its own LLM call.
     """
-    prompt = f"""Generate exactly 3 short web search queries to verify or refute this claim.
-Target the SPECIFIC named entities, places, or measurements in the claim.
-If the claim names something unusual (an obscure place/lake/person/statistic):
-- one query should search for that exact name alone
-- one query should try a plausible alternate spelling or transliteration of
-  that name, in case it was mis-transcribed from audio (e.g. "Naita-Cainan"
-  could be a garbled version of a real Finnish or Scandinavian place name)
-
-Claim: "{claim_text}"
-Category: {category}
-
-Return ONLY a JSON array of 3 short strings, nothing else.
-Example: ["query one", "query two", "query three"]
-"""
-    try:
-        response = groq_client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=200,
-        )
-        raw = _strip_code_fences(response.choices[0].message.content.strip())
-        queries = json.loads(raw)
-        if isinstance(queries, list) and all(isinstance(q, str) for q in queries) and queries:
-            return queries[:3]
-    except Exception as e:
-        print(f"[search] query generation failed, using fallback: {e}")
-
-    return [claim_text, f"{claim_text} fact check", f"is it true that {claim_text.lower()}"]
+    return [
+        claim_text,
+        f"{claim_text} fact check",
+        f"is it true that {claim_text.lower()}",
+    ]
 
 
 def _extract_publisher(url: str) -> str:
@@ -90,20 +56,54 @@ def _extract_publisher(url: str) -> str:
     return urlparse(url).netloc.replace("www.", "")
 
 
-def search_evidence_for_claim(claim_text: str, category: str) -> tuple[list[Source], dict]:
+def _search_tavily(query: str) -> tuple[str, list[dict]]:
+    """Run one Tavily search and return the query plus raw results."""
+    logger.info(
+        "TAVILY call | query=%s | max_results=%d",
+        query,
+        MAX_RESULTS_PER_QUERY,
+    )
+
+    start = time.time()
+
+    try:
+        response = tavily_client.search(
+            query=query,
+            max_results=MAX_RESULTS_PER_QUERY,
+        )
+
+        elapsed = time.time() - start
+        results = response.get("results", [])
+
+        logger.info(
+            "TAVILY success | query=%s | results=%d | duration=%.2fs",
+            query,
+            len(results),
+            elapsed,
+        )
+
+        return query, results
+
+    except Exception:
+        logger.exception("TAVILY failure | query=%s", query)
+        return query, []
+
+
+def search_evidence_for_claim(
+    claim_text: str,
+    category: str,
+    queries: list[str] | None = None,
+) -> tuple[list[Source], dict]:
     """
     Returns (sources, search_meta).
 
-    search_meta tracks:
-    - total_raw_results: raw result count across all queries that actually ran
-    - queries_succeeded: how many queries executed without throwing an error
-    - queries_failed: how many queries errored out (API/network problems)
+    queries: the 3 search queries generated during claim extraction.
+    If omitted, cheap template queries are used instead.
 
-    This distinction matters: a claim should only be treated as "searched and
-    found genuinely nothing" if queries actually ran successfully. If every
-    query errored out, that's a search failure, not evidence about the claim.
+    Tavily searches run concurrently with a small worker pool to reduce
+    latency while remaining conservative with free-tier rate limits.
     """
-    queries = _generate_queries(claim_text, category)
+    queries = queries or _fallback_queries(claim_text)
 
     seen_domains = set()
     collected: list[Source] = []
@@ -111,31 +111,50 @@ def search_evidence_for_claim(claim_text: str, category: str) -> tuple[list[Sour
     queries_succeeded = 0
     queries_failed = 0
 
-    for query in queries:
-        try:
-            response = tavily_client.search(
-                query=query,
-                max_results=MAX_RESULTS_PER_QUERY,
-            )
-        except Exception as e:
-            print(f"[search] Tavily error for query '{query}': {e}")
-            queries_failed += 1
-            continue
+    results_by_query = {}
 
-        queries_succeeded += 1
-        results = response.get("results", [])
-        total_raw_results += len(results)
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SEARCHES) as executor:
+        futures = {
+            executor.submit(_search_tavily, query): query
+            for query in queries
+        }
+
+        for future in as_completed(futures):
+            query = futures[future]
+
+            try:
+                returned_query, results = future.result()
+                results_by_query[returned_query] = results
+
+                if results:
+                    queries_succeeded += 1
+                else:
+                    queries_succeeded += 1
+
+                total_raw_results += len(results)
+
+            except Exception:
+                logger.exception("TAVILY worker failure | query=%s", query)
+                queries_failed += 1
+
+    # Process results in original query order for deterministic output.
+    for query in queries:
+        results = results_by_query.get(query, [])
 
         for result in results:
             if len(collected) >= MAX_SOURCES_PER_CLAIM:
-                continue
+                break
+
             url = result.get("url", "")
             publisher = _extract_publisher(url)
+
             if publisher in seen_domains:
                 continue
+
             content = result.get("content", "").strip()
             if not content:
                 continue
+
             collected.append(
                 Source(
                     title=result.get("title", "Untitled"),
@@ -157,4 +176,14 @@ def search_evidence_for_claim(claim_text: str, category: str) -> tuple[list[Sour
         "queries_failed": queries_failed,
         "sources_found": len(collected),
     }
+
+    logger.info(
+        "SEARCH complete | queries=%d | succeeded=%d | failed=%d | raw_results=%d | sources=%d",
+        len(queries),
+        queries_succeeded,
+        queries_failed,
+        total_raw_results,
+        len(collected),
+    )
+
     return collected, search_meta
