@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from search import Source
 import time
 from logging_utils import logger
+from scoring import parse_assessments, compute_confidence
 
 load_dotenv()
 
@@ -57,10 +58,15 @@ class Verdict(BaseModel):
         "MISLEADING",
         "UNVERIFIABLE"
     ]
+    # Computed deterministically in scoring.py from the LLM's structured
+    # per-source assessments — the LLM never supplies this number.
     confidence: float
     summary: str
     explanation: str
     cited_sources: list[CitedSource]
+    # Component scores behind `confidence` (None for heuristic/fallback
+    # verdicts and for results cached before this field existed).
+    confidence_breakdown: dict | None = None
 
 
 SYSTEM_PROMPT = """You are an evidence-based fact-checking assistant writing for a
@@ -74,10 +80,33 @@ evidence from one claim influence the verdict for another claim.
 
 For EACH claim, do the following:
 
-STEP 1 — RELEVANCE CHECK:
-For each of that claim's sources, judge whether it actually addresses the
-claim's specific subject matter. Ignore sources that only share a keyword
-but don't substantively address the claim's actual content.
+STEP 1 — ASSESS EVERY SOURCE:
+For EVERY source listed under a claim (use its [index] number), judge it
+against the claim using only that source's own snippet:
+
+- "relevance" (integer 0-3): how directly the source addresses the claim's
+  specific subject matter.
+    0 = unrelated, or only shares a keyword
+    1 = tangential / general background only
+    2 = addresses the subject but only part of the specific assertion
+    3 = directly addresses the specific assertion
+- "stance" (one of "supports", "contradicts", "partial", "neutral"): what the
+  snippet says about the claim AS STATED.
+    supports    = confirms the claim
+    contradicts = disputes the claim
+    partial     = confirms some elements but not others (overstated, missing
+                  context, only true under conditions)
+    neutral     = says nothing that bears on whether the claim is correct
+- "directness" (integer 0-3): how explicitly the snippet states the fact at
+  issue.
+    0 = nothing bearing on the claim
+    1 = only implied, or general background
+    2 = stated clearly, but not with the claim's exact specifics
+    3 = explicitly states the specific fact, figure, date or scope in the claim
+        (or its direct negation)
+
+Do NOT weigh a source up or down for its publisher or credibility tier — that
+is handled separately. Judge only what the snippet says.
 
 You MAY use general background/context explained within a relevant source
 (e.g. a source explaining plate tectonics) to reason about whether the claim
@@ -112,10 +141,11 @@ CRITICAL RULES:
 4. If zero sources are relevant for a claim, that claim's verdict MUST be
    UNVERIFIABLE.
 
-5. confidence (0.0-1.0) reflects how strongly the RELEVANT evidence supports
-   your verdict — not how "true" the claim is. Tier 1-2 sources
-   (government/scientific) should carry more weight than Tier 4-5 sources
-   when they disagree.
+5. Do NOT output any confidence or probability number. Confidence is
+   computed separately from your per-source assessments, so make those
+   assessments honest and precise. When sources disagree, give the verdict
+   the best-supported reading, with Tier 1-2 sources (government/scientific)
+   outweighing Tier 4-5 sources.
 
 6. WRITING STYLE:
    - "summary": ONE short, plain sentence a general reader gets in 3 seconds.
@@ -133,7 +163,9 @@ object MUST include "claim_index" set to the number from that claim's
   {
     "claim_index": 0,
     "verdict": "...",
-    "confidence": 0.0,
+    "source_assessments": [
+      {"source_index": 0, "relevance": 0, "stance": "neutral", "directness": 0}
+    ],
     "summary": "...",
     "explanation": "...",
     "cited_sources": [
@@ -146,6 +178,9 @@ object MUST include "claim_index" set to the number from that claim's
     ]
   }
 ]
+
+"source_assessments" must contain one entry for EVERY source of that claim,
+including irrelevant ones (relevance 0, stance "neutral", directness 0).
 """
 
 
@@ -201,7 +236,9 @@ def _call_llm_batch(user_prompt: str, batch_size: int) -> str:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.1,
-            max_tokens=min(4000, 1300 * batch_size),
+            # Slightly larger per-claim budget: output now also carries a
+            # per-source assessment list (up to 5 small objects per claim).
+            max_tokens=min(4000, 1600 * batch_size),
         )
 
         elapsed = time.time() - start
@@ -243,9 +280,11 @@ def _validate_and_verify(parsed_obj: dict, sources: list[Source]) -> Verdict:
     ]
 
     try:
+        # Any "confidence" the model may still emit is deliberately ignored;
+        # the real value is computed below by scoring.compute_confidence.
         verdict = Verdict(
             verdict=parsed_obj.get("verdict", "UNVERIFIABLE"),
-            confidence=float(parsed_obj.get("confidence", 0.0)),
+            confidence=0.0,
             summary=parsed_obj.get("summary", ""),
             explanation=parsed_obj.get("explanation", ""),
             cited_sources=verified_citations,
@@ -253,21 +292,49 @@ def _validate_and_verify(parsed_obj: dict, sources: list[Source]) -> Verdict:
     except (ValidationError, ValueError, TypeError):
         return _fallback_invalid_verdict()
 
+    if "confidence" in parsed_obj:
+        logger.debug("SCORE | ignoring LLM-supplied confidence=%r", parsed_obj["confidence"])
+
     # If the model gave a definite verdict but none of its citations matched
     # the URLs we actually provided for THIS claim, don't trust the verdict.
     if verdict.verdict != "UNVERIFIABLE" and not verdict.cited_sources:
-        verdict.verdict = "UNVERIFIABLE"
-        verdict.confidence = 0.0
-        verdict.summary = "There isn't enough verifiable evidence to support a verdict."
-        verdict.explanation = (
-            "No verifiably relevant evidence was retrieved to support "
-            "a verdict on this claim."
+        return _unverifiable_no_evidence(
+            verdict, "No verifiably relevant evidence was retrieved to support "
+            "a verdict on this claim.", "no_valid_citations",
         )
+
+    # Deterministic confidence from the LLM's structured per-source factors.
+    if verdict.verdict != "UNVERIFIABLE":
+        assessments = parse_assessments(parsed_obj.get("source_assessments"), len(sources))
+        confidence, breakdown = compute_confidence(verdict.verdict, assessments, sources)
+
+        if breakdown.get("no_aligned_evidence"):
+            # Verdict isn't backed by any usable assessed evidence (e.g. TRUE
+            # but no source actually "supports", or assessments missing).
+            return _unverifiable_no_evidence(
+                verdict, "The retrieved sources didn't clearly back up any verdict "
+                "on this claim.", "no_aligned_evidence", breakdown,
+            )
+
+        verdict.confidence = confidence
+        verdict.confidence_breakdown = breakdown
 
     # UNVERIFIABLE should always have zero confidence.
     if verdict.verdict == "UNVERIFIABLE":
         verdict.confidence = 0.0
 
+    return verdict
+
+
+def _unverifiable_no_evidence(
+    verdict: Verdict, explanation: str, reason: str, breakdown: dict | None = None
+) -> Verdict:
+    logger.warning("SCORE | verdict downgraded to UNVERIFIABLE | was=%s | reason=%s", verdict.verdict, reason)
+    verdict.verdict = "UNVERIFIABLE"
+    verdict.confidence = 0.0
+    verdict.summary = "There isn't enough verifiable evidence to support a verdict."
+    verdict.explanation = explanation
+    verdict.confidence_breakdown = breakdown or {"reason": reason}
     return verdict
 
 
@@ -398,6 +465,8 @@ def fact_check_no_sources(search_meta: dict | None) -> Verdict:
                 "rather than a confirmed fact."
             ),
             cited_sources=[],
+            # Fixed heuristic (no sources to score) — not from the formula.
+            confidence_breakdown={"reason": "heuristic_no_search_results", "confidence": 0.45},
         )
 
     # Search worked and found results, but none passed the relevance filter.

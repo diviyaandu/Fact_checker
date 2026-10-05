@@ -139,6 +139,18 @@ if st.button("Analyze Video", type="primary"):
                             verdict.confidence,
                             text=f"Evidence confidence: {verdict.confidence:.0%}",
                         )
+                        bd = verdict.confidence_breakdown or {}
+                        if bd.get("components"):
+                            with st.expander("How was this confidence calculated?"):
+                                comps = bd["components"]
+                                wts = bd["weights"]
+                                st.caption(
+                                    "Computed from evidence factors (0–1), not assigned by the model."
+                                )
+                                for name in ("relevance", "credibility", "strength", "agreement"):
+                                    st.write(f"- {name.title()}: {comps[name]:.2f} (weight {wts[name]:.2f})")
+                                if bd.get("conflict_capped"):
+                                    st.write("- ⚠️ Conflicting evidence found — confidence capped.")
                         st.markdown(f"**{verdict.summary}**")
                         st.markdown(verdict.explanation)
 

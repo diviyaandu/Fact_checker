@@ -216,6 +216,24 @@ def _record_and_cache(
         claim.claim_id, verdict.verdict, verdict.confidence,
     )
 
+    # Component scores behind the deterministic confidence (see scoring.py).
+    bd = verdict.confidence_breakdown or {}
+    comps = bd.get("components")
+    if comps:
+        logger.info(
+            "CONFIDENCE | claim_id=%d | relevance=%.2f | credibility=%.2f | "
+            "strength=%.2f | agreement=%.2f | dominance=%.2f | weighted_sum=%.2f | "
+            "conflict_capped=%s | final=%.2f",
+            claim.claim_id, comps["relevance"], comps["credibility"],
+            comps["strength"], comps["agreement"], bd["dominance"],
+            bd["weighted_sum"], bd["conflict_capped"], verdict.confidence,
+        )
+    else:
+        logger.info(
+            "CONFIDENCE | claim_id=%d | no component scores | reason=%s | final=%.2f",
+            claim.claim_id, bd.get("reason", "n/a"), verdict.confidence,
+        )
+
     results[claim.claim_id] = {
         "sources": sources,
         "search_meta": search_meta,
