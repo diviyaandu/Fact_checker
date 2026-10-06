@@ -93,6 +93,37 @@ def save_claims(video_id: str, claims: list[Claim]) -> None:
 # EVIDENCE + VERDICTS (batched)
 # ============================================================
 
+def _claim_cache_key(claim_text: str) -> str:
+    """Cache key for one claim's sources + verdict (shared by lookup and writes)."""
+    return cache_utils.make_key("claim", claim_text)
+
+
+def is_fully_cached(video_id: str, use_cache: bool) -> bool:
+    """
+    True when analysing this video would need NO external calls — the transcript,
+    the extracted claims and every claim's sources + verdict are all in the cache
+    (so no YouTube/Whisper, Groq or Tavily request would be made).
+
+    Read-only and silent (no hit/miss logging), so the UI can call it freely to
+    decide whether the Analyze cooldown applies. Mirrors the checks made by
+    get_cached_transcript / get_cached_claims / get_claim_verdicts.
+    """
+    if not use_cache:
+        return False
+
+    if not cache_utils.get("transcript", video_id):
+        return False
+
+    cached_claims = cache_utils.get("claims", video_id)
+    if cached_claims is None:
+        return False
+
+    return all(
+        cache_utils.get("claim_results", _claim_cache_key(c["claim_text"]))
+        for c in cached_claims
+    )
+
+
 def get_claim_verdicts(claims: list[Claim], use_cache: bool) -> dict[int, dict]:
     """
     Resolves sources + verdict for every claim.
@@ -118,7 +149,7 @@ def get_claim_verdicts(claims: list[Claim], use_cache: bool) -> dict[int, dict]:
 
     # --- Step 1: cache lookup ---
     for claim in claims:
-        claim_key = cache_utils.make_key("claim", claim.claim_text)
+        claim_key = _claim_cache_key(claim.claim_text)
         cached_result = cache_utils.get("claim_results", claim_key) if use_cache else None
 
         if cached_result:
