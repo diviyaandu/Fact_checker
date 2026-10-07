@@ -12,29 +12,17 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-# Make the project root importable and provide dummy keys so the Groq/Tavily
-# clients can be constructed at import time (nothing is ever called).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ.setdefault("GROQ_API_KEY", "test-key")
-os.environ.setdefault("TAVILY_API_KEY", "test-key")
+sys.path.insert(0, os.path.dirname(__file__))
+import _stubs  # noqa: E402
 
-# Everything that touches the network/GPU/UI is mocked below, so if a heavy SDK
-# isn't installed (e.g. a bare CI box) fall back to an inert stand-in module
-# just so the project's imports succeed. Installed packages are used as-is.
-for _mod in ("groq", "tavily", "youtube_transcript_api", "yt_dlp", "faster_whisper", "streamlit"):
-    try:
-        __import__(_mod)
-    except ImportError:
-        _stub = type(sys)(_mod)
-        _stub.__getattr__ = lambda name: (lambda *a, **k: SimpleNamespace())
-        sys.modules[_mod] = _stub
+_stubs.install()
 
-import scoring  # noqa: E402
-import fact_checker  # noqa: E402
-import pipeline  # noqa: E402
-import cache_utils  # noqa: E402
-from claims import Claim  # noqa: E402
-from search import Source  # noqa: E402
+from factcheck import scoring  # noqa: E402
+from factcheck import cache  # noqa: E402
+from factcheck.models import Claim, Source, Verdict  # noqa: E402
+from factcheck.pipeline import get_claim_verdicts  # noqa: E402
+from factcheck.pipeline import verdicts as pipeline_verdicts  # noqa: E402
+from factcheck.verdicts import checker, fact_check_claims_batch, fact_check_no_sources  # noqa: E402
 
 
 def src(publisher, tier, i=0):
@@ -145,8 +133,8 @@ class ScoringFormula(unittest.TestCase):
 
 class FactCheckIntegration(unittest.TestCase):
     def _run_batch(self, llm_payload, items):
-        with mock.patch.object(fact_checker, "_call_llm_batch", return_value=json.dumps(llm_payload)):
-            return fact_checker.fact_check_claims_batch(items)
+        with mock.patch.object(checker, "_call_llm_batch", return_value=json.dumps(llm_payload)):
+            return fact_check_claims_batch(items)
 
     def test_llm_confidence_is_ignored(self):
         sources = [src("nasa.gov", 1)]
@@ -185,18 +173,18 @@ class FactCheckIntegration(unittest.TestCase):
         self.assertEqual(v.confidence, 0.0)
 
     def test_no_sources_paths_unchanged(self):
-        v = fact_checker.fact_check_no_sources({"total_raw_results": 0, "queries_succeeded": 3})
+        v = fact_check_no_sources({"total_raw_results": 0, "queries_succeeded": 3})
         self.assertEqual((v.verdict, v.confidence), ("FALSE", 0.45))
-        v = fact_checker.fact_check_no_sources({"queries_succeeded": 0})
+        v = fact_check_no_sources({"queries_succeeded": 0})
         self.assertEqual((v.verdict, v.confidence), ("UNVERIFIABLE", 0.0))
 
     def test_old_cached_verdict_still_loads(self):
         old = {"verdict": "TRUE", "confidence": 0.8, "summary": "s", "explanation": "e", "cited_sources": []}
-        self.assertIsNone(fact_checker.Verdict(**old).confidence_breakdown)
+        self.assertIsNone(Verdict(**old).confidence_breakdown)
 
 
 class PipelineSmoke(unittest.TestCase):
-    """Runs pipeline.get_claim_verdicts end to end with search + Groq mocked
+    """Runs get_claim_verdicts end to end with search + Groq mocked
     and the cache redirected to a temp file."""
 
     def test_pipeline_end_to_end(self):
@@ -221,11 +209,11 @@ class PipelineSmoke(unittest.TestCase):
             } for i in range(batch_size)])
 
         with tempfile.TemporaryDirectory() as tmp, \
-                mock.patch.object(cache_utils, "_CACHE_PATH", os.path.join(tmp, "c.json")), \
-                mock.patch.object(pipeline, "search_evidence_for_claim", side_effect=fake_search), \
-                mock.patch.object(fact_checker, "_call_llm_batch", side_effect=fake_llm) as llm, \
+                mock.patch.object(cache, "_CACHE_PATH", os.path.join(tmp, "c.json")), \
+                mock.patch.object(pipeline_verdicts, "search_evidence_for_claim", side_effect=fake_search), \
+                mock.patch.object(checker, "_call_llm_batch", side_effect=fake_llm) as llm, \
                 self.assertLogs("fact_checker", level="INFO") as logs:
-            results = pipeline.get_claim_verdicts(claims, use_cache=True)
+            results = get_claim_verdicts(claims, use_cache=True)
 
             # 2 claims with sources, BATCH_SIZE=2 -> exactly one Groq call.
             self.assertEqual(llm.call_count, 1)
@@ -237,7 +225,7 @@ class PipelineSmoke(unittest.TestCase):
             self.assertTrue(any("CONFIDENCE | claim_id=0 | relevance=" in m for m in logs.output))
 
             # Second run is served from cache, breakdown preserved.
-            again = pipeline.get_claim_verdicts(claims, use_cache=True)
+            again = get_claim_verdicts(claims, use_cache=True)
             self.assertTrue(again[0]["from_cache"])
             self.assertEqual(again[0]["verdict"].confidence, results[0]["verdict"].confidence)
             self.assertIsNotNone(again[0]["verdict"].confidence_breakdown)

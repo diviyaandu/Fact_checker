@@ -1,5 +1,5 @@
 """
-scoring.py
+scoring/confidence.py
 
 Deterministic confidence scoring. The LLM (Groq) only produces *structured
 per-source judgments* (relevance, stance, directness). This module turns
@@ -14,7 +14,7 @@ FORMULA (confidence = confidence in the verdict reached, NOT P(claim true))
 Per source i (all inputs normalised to 0-1):
     R_i = relevance / 3          LLM rubric 0-3: how directly it addresses the claim
     S_i = directness / 3         LLM rubric 0-3: how explicitly it states the fact
-    C_i = TIER_CREDIBILITY[tier] existing Tier 1-5 hierarchy (search.py / trusted_sources.py)
+    C_i = TIER_CREDIBILITY[tier] existing Tier 1-5 hierarchy (evidence/credibility.py)
     w_i = R_i * C_i * S_i        evidence "mass" of the source
 
 Only sources with relevance >= 1, directness >= 1 and stance != neutral are
@@ -48,84 +48,21 @@ Weights favour strength of evidence (what the sources actually say) over
 retrieval quality; they are heuristic design choices, tunable in one place.
 """
 
-from dataclasses import dataclass
-
-from logging_utils import logger
-
-FORMULA_VERSION = "v1"
-
-# Tier 1 (government/official) ... Tier 5 (unrated). Mirrors trusted_sources.py.
-TIER_CREDIBILITY = {1: 1.00, 2: 0.85, 3: 0.65, 4: 0.45, 5: 0.25}
-DEFAULT_CREDIBILITY = TIER_CREDIBILITY[5]
-
-WEIGHTS = {
-    "relevance": 0.20,
-    "credibility": 0.25,
-    "strength": 0.35,
-    "agreement": 0.20,
-}
-
-MIN_RATING = 1                     # relevance/directness below this => source ignored
-RATING_MAX = 3                     # LLM rubric scale is 0-3
-AGREEMENT_SATURATION = 3           # 3 independent domains = full agreement credit
-CONFLICT_DOMINANCE_THRESHOLD = 0.75
-CONFLICT_CAP = 0.60
-MAX_CONFIDENCE = 0.95              # never claim certainty
-
-STANCES = {"supports", "contradicts", "partial", "neutral"}
-MIXED_VERDICTS = {"PARTIALLY TRUE", "MISLEADING"}
-
-
-@dataclass
-class SourceAssessment:
-    source_index: int
-    relevance: int      # 0-3
-    stance: str         # supports | contradicts | partial | neutral
-    directness: int     # 0-3
-
-
-def _clamp_rating(value) -> int:
-    try:
-        return max(0, min(RATING_MAX, int(round(float(value)))))
-    except (TypeError, ValueError):
-        return 0
-
-
-def parse_assessments(raw, n_sources: int) -> list[SourceAssessment]:
-    """Validates the LLM's source_assessments. Out-of-range or duplicate
-    indices are dropped (first wins); bad ratings become 0; unknown stances
-    become neutral. Sources the LLM omitted simply contribute nothing."""
-    if not isinstance(raw, list):
-        return []
-
-    seen: set[int] = set()
-    parsed: list[SourceAssessment] = []
-
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-
-        idx = item.get("source_index")
-        if isinstance(idx, bool) or not isinstance(idx, int):
-            continue
-        if not 0 <= idx < n_sources or idx in seen:
-            continue
-
-        stance = str(item.get("stance", "neutral")).strip().lower()
-        if stance not in STANCES:
-            stance = "neutral"
-
-        seen.add(idx)
-        parsed.append(
-            SourceAssessment(
-                source_index=idx,
-                relevance=_clamp_rating(item.get("relevance")),
-                stance=stance,
-                directness=_clamp_rating(item.get("directness")),
-            )
-        )
-
-    return parsed
+from factcheck.logging_utils import logger
+from factcheck.scoring.assessments import SourceAssessment
+from factcheck.scoring.constants import (
+    AGREEMENT_SATURATION,
+    CONFLICT_CAP,
+    CONFLICT_DOMINANCE_THRESHOLD,
+    DEFAULT_CREDIBILITY,
+    FORMULA_VERSION,
+    MAX_CONFIDENCE,
+    MIN_RATING,
+    MIXED_VERDICTS,
+    RATING_MAX,
+    TIER_CREDIBILITY,
+    WEIGHTS,
+)
 
 
 def _domain(source) -> str:

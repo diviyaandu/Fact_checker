@@ -6,9 +6,9 @@ ui.results so they can be re-drawn on any rerun from session state.
 
 import streamlit as st
 
-import pipeline
-from logging_utils import logger
-from youtube import extract_video_id
+from factcheck import pipeline
+from factcheck.logging_utils import logger
+from factcheck.transcript import extract_video_id
 
 
 def verdict_counts(claims, claim_results) -> dict[str, int]:

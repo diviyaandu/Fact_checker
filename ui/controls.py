@@ -17,8 +17,8 @@ enabled whenever the URL in the box is fully cached.
 
 import streamlit as st
 
-import pipeline
-from youtube import extract_video_id, is_valid_youtube_url
+from factcheck import pipeline
+from factcheck.transcript import extract_video_id, is_valid_youtube_url
 from ui import config, state
 from ui.analysis import run_analysis
 from ui.styles import cooldown_button_css

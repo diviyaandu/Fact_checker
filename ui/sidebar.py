@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-import cache_utils
+from factcheck import cache
 from ui import config
 from ui.styles import cache_notice_html
 
@@ -19,7 +19,7 @@ def render_sidebar() -> bool:
             "evaluation run.",
         )
         if st.button("Clear cache"):
-            cache_utils.clear()
+            cache.clear()
             # Rendered only in the run triggered by this click, so it can't go
             # stale on later reruns; CSS fades it out and collapses it.
             st.markdown(

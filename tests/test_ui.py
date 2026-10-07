@@ -136,13 +136,26 @@ class AppFlow(unittest.TestCase):
         self.pipeline.fetch_claims.return_value = claims
         self.pipeline.get_claim_verdicts.return_value = results
 
-        youtube = types.ModuleType("youtube")
-        youtube.extract_video_id = lambda u: "AAAAAAAAAAA"
-        youtube.is_valid_youtube_url = lambda u: "youtube.com" in u
+        # Replace the backend pieces the UI touches. `factcheck` becomes a stand-in
+        # package (with the real __path__, so real submodules such as
+        # factcheck.logging_utils still import) exposing the mocks.
+        transcript = types.ModuleType("factcheck.transcript")
+        transcript.extract_video_id = lambda u: "AAAAAAAAAAA"
+        transcript.is_valid_youtube_url = lambda u: "youtube.com" in u
+
+        cache_mock = mock.MagicMock()
+        factcheck = types.ModuleType("factcheck")
+        factcheck.__path__ = [os.path.join(os.path.dirname(APP_PATH), "factcheck")]
+        factcheck.pipeline = self.pipeline
+        factcheck.cache = cache_mock
+        factcheck.transcript = transcript
 
         self.patcher = mock.patch.dict(sys.modules, {
-            "streamlit": self.st, "pipeline": self.pipeline, "youtube": youtube,
-            "cache_utils": mock.MagicMock(),
+            "streamlit": self.st,
+            "factcheck": factcheck,
+            "factcheck.pipeline": self.pipeline,
+            "factcheck.cache": cache_mock,
+            "factcheck.transcript": transcript,
         })
         self.patcher.start()
         # Fresh ui package per test, so it binds to THIS test's fake Streamlit

@@ -1,5 +1,5 @@
 """
-trusted_sources.py
+credibility.py
 
 Domains are no longer used as a hard search filter — restricting search to a
 tiny whitelist was silently starving the fact-checker of real evidence for

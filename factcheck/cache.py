@@ -1,5 +1,5 @@
 """
-cache_utils.py
+cache.py
 
 Minimal disk cache, no extra dependencies. Two purposes:
 
@@ -9,10 +9,10 @@ Minimal disk cache, no extra dependencies. Two purposes:
    run against the SAME claims/evidence each time you re-test a stage,
    otherwise LLM non-determinism confounds your before/after numbers.
    Caching intermediate results (transcript, claims) lets you swap out
-   just the fact_checker.py logic and compare fairly.
+   just the verdict logic and compare fairly.
 
 Not thread-safe by design — fine for a single Streamlit session.
-Cache lives at .cache/fact_checker_cache.json relative to the working dir.
+Cache lives at <project root>/.cache/fact_checker_cache.json.
 """
 
 import os
@@ -20,7 +20,10 @@ import json
 import hashlib
 import threading
 
-_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "fact_checker_cache.json")
+# Project root (one level above this package), so the cache stays at
+# <project>/.cache/fact_checker_cache.json exactly as before the refactor.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CACHE_PATH = os.path.join(_PROJECT_ROOT, ".cache", "fact_checker_cache.json")
 _lock = threading.Lock()
 
 

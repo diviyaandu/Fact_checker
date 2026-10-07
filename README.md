@@ -80,7 +80,7 @@ rank lowest.
 | 4 | Fact-check / reference | snopes.com, politifact.com, factcheck.org, wikipedia | 0.45 |
 | 5 | Unrated | everything else | 0.25 |
 
-The domain lists live in `trusted_sources.py`.
+The domain lists live in `factcheck/evidence/credibility.py`.
 
 ---
 
@@ -134,7 +134,7 @@ Each claim card in the app has a **"How was this confidence calculated?"** expan
 these components, and the same numbers are written to the log (see [Logging](#logging)).
 
 > The weights and thresholds are heuristic design choices, not fitted to data. They are all
-> in one place at the top of `scoring.py` and are easy to tune. The score expresses how well
+> in one place, `factcheck/scoring/constants.py`, and are easy to tune. The score expresses how well
 > the evidence supports **the verdict reached**, not how likely the claim is to be true.
 
 ---
@@ -203,11 +203,12 @@ streamlit run app.py
 | `GROQ_MODEL` | `.env` | `openai/gpt-oss-120b` | model used for verdicts (claim extraction is fixed to the same default) |
 | `LOG_LEVEL` | `.env` | `INFO` | `DEBUG` also logs per-source scoring rows |
 | `ANALYZE_COOLDOWN_SECONDS` | shell environment | `60` | `0` disables the cooldown. Set it in your terminal before launching, e.g. `ANALYZE_COOLDOWN_SECONDS=30 streamlit run app.py` (PowerShell: `$env:ANALYZE_COOLDOWN_SECONDS=30; streamlit run app.py`) |
-| `MAX_RESULTS_PER_QUERY`, `MAX_SOURCES_PER_CLAIM`, `MAX_CONCURRENT_SEARCHES` | `search.py` | 3 / 5 / 2 | evidence retrieval limits |
-| `BATCH_SIZE` | `fact_checker.py` | 2 | claims per Groq verdict call |
-| scoring weights, caps | `scoring.py` | see above | |
-
-The claim limit (5) is enforced in `claims.py`.
+| `MAX_CLAIMS` | `factcheck/config.py` | 5 | hard cap on claims per video |
+| `MAX_RESULTS_PER_QUERY`, `MAX_SOURCES_PER_CLAIM`, `MAX_CONCURRENT_SEARCHES`, `MAX_SNIPPET_CHARS` | `factcheck/config.py` | 3 / 5 / 2 / 800 | evidence retrieval limits |
+| `BATCH_SIZE` | `factcheck/config.py` | 2 | claims per Groq verdict call |
+| `WHISPER_MODEL_SIZE` | `factcheck/config.py` | `tiny` | speech-to-text model |
+| scoring weights, caps | `factcheck/scoring/constants.py` | see above | |
+| UI cooldown / notice timing | `ui/config.py` | 60 s / 3.5 s | |
 
 ---
 
@@ -225,31 +226,56 @@ CONFIDENCE | claim_id=1 | relevance=0.89 | credibility=0.86 | strength=0.78 | ag
 ## Project layout
 
 ```
-app.py              Streamlit entry point (a few lines)
-ui/                 the front end, one concern per file
-  config.py           cooldown length, notice duration, widget keys
-  timing.py           pure cooldown arithmetic
-  styles.py           CSS for the filling button and the fading notice
-  state.py            everything kept in st.session_state
-  sidebar.py          cache controls
-  controls.py         URL box, Analyze button, cooldown logic
-  analysis.py         runs the pipeline for one URL
-  results.py          draws the results
-pipeline.py         orchestration + caching for all stages
-youtube.py          URL validation, official captions
-transcription.py    Whisper fallback
-claims.py           claim extraction (Groq)
-search.py           Tavily evidence search
-trusted_sources.py  credibility tiers
-fact_checker.py     verdict prompt, batching, citation validation (Groq)
-scoring.py          the deterministic confidence formula
-cache_utils.py      JSON disk cache
-logging_utils.py    shared logger
-tests/              unit + flow tests (no network, no API keys needed)
+app.py                  Streamlit entry point (a few lines)
+
+factcheck/              the whole backend (no Streamlit anywhere in here)
+  config.py               every backend setting: keys, models, limits, batch size
+  models.py               Claim, Source, CitedSource, Verdict
+  llm.py                  the one Groq client + logged chat call
+  cache.py                JSON disk cache (.cache/ in the project root)
+  logging_utils.py        the shared logger
+  transcript/             getting the transcript
+    segments.py             segment format shared by every source
+    youtube.py              URL validation, video ID, official captions
+    whisper.py              audio download + local Whisper fallback
+  claims/                 claim extraction
+    prompt.py               the extraction prompt
+    extractor.py            extract_claims + validation of each proposed claim
+  evidence/               evidence retrieval
+    credibility.py          Tier 1-5 domain lists
+    search.py               Tavily queries, parallel run, de-dup, ranking
+  verdicts/               LLM verdicts
+    prompt.py               the verdict prompt + the claim/source text builder
+    checker.py              one Groq call per batch, with one retry
+    parsing.py              JSON -> Verdict: real citations only, safe downgrades
+    no_sources.py           verdicts when search found nothing (no LLM call)
+  scoring/                deterministic confidence
+    constants.py            weights, tier credibility, caps
+    assessments.py          the LLM's per-source judgments + validation
+    confidence.py           the formula
+  pipeline/               orchestration + caching - the only API the UI uses
+    transcripts.py          transcript cache -> captions -> Whisper
+    claims.py               claims cache / extract / save
+    verdicts.py             evidence search + batching + caching
+    recording.py            logging and caching of each finished verdict
+    cache_check.py          "is this whole video already cached?"
+
+ui/                     the front end, one concern per file
+  config.py               cooldown length, notice duration, widget keys
+  timing.py               pure cooldown arithmetic
+  styles.py               CSS for the filling button and the fading notice
+  state.py                everything kept in st.session_state
+  sidebar.py              cache controls
+  controls.py             URL box, Analyze button, cooldown logic
+  analysis.py             runs the pipeline for one URL
+  results.py              draws the results
+
+tests/                  no network, no API keys needed
 ```
 
-> The backend modules (everything below `ui/`) are in the process of being split into smaller
-> packages; this section will be updated when that lands.
+**Import direction is one-way:** `pipeline` -> `transcript`, `claims`, `evidence`, `verdicts` ->
+`scoring`, `llm`, `models`, `config`, `cache`, `logging_utils`. Nothing imports upward, and the UI
+only talks to `factcheck.pipeline` (plus the URL helpers in `factcheck.transcript`).
 
 ## Tests
 
@@ -257,10 +283,18 @@ tests/              unit + flow tests (no network, no API keys needed)
 python -m unittest discover -s tests -v
 ```
 
-The tests need no API keys or network access — Groq, Tavily and Streamlit are replaced with fakes.
-They cover the confidence formula (including a hand-checked calculation, the conflict cap and
-edge cases), the verdict-validation path, the full batched pipeline with caching, the cache check,
-and the cooldown / cached-bypass / fading-notice behaviour of the UI.
+The tests need no API keys or network access - Groq, Tavily, YouTube and Streamlit are replaced
+with fakes.
+
+| File | Covers |
+|---|---|
+| `test_scoring.py` | the confidence formula (hand-checked), conflict cap, edge cases, and the batched pipeline end to end with caching |
+| `test_claims.py` | claim validation, real timestamps, the 5-claim cap, query fallbacks, JSON retry |
+| `test_evidence.py` | de-duplication, caps, ranking, metadata, concurrency limit, failure handling |
+| `test_verdicts.py` | prompt layout, citation validation, batching, retry, reordering |
+| `test_transcript.py` | URL parsing, segment format, official captions |
+| `test_cache_check.py` | the "fully cached" check behind the cooldown bypass |
+| `test_ui.py` | cooldown lifecycle, cached bypass, fading notice |
 
 ## Limitations
 

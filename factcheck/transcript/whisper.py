@@ -1,14 +1,25 @@
+"""Fallback transcription: download the audio with yt-dlp and transcribe locally
+with faster-whisper (used only when a video has no official captions)."""
+
 import os
 import tempfile
 import time
-import streamlit as st
+from functools import lru_cache
+
 import yt_dlp
 from faster_whisper import WhisperModel
 
+from factcheck import config
+from factcheck.logging_utils import logger
+from factcheck.transcript.segments import make_segment
 
-@st.cache_resource
+
+@lru_cache(maxsize=1)
 def get_model():
-    return WhisperModel("tiny", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
+    """Loaded once per process and reused (the model is slow to initialise)."""
+    return WhisperModel(
+        config.WHISPER_MODEL_SIZE, device="cpu", compute_type="int8", cpu_threads=os.cpu_count()
+    )
 
 
 def download_audio(video_id: str, out_dir: str) -> str:
@@ -35,7 +46,7 @@ def transcribe_with_whisper(video_id: str) -> list[dict]:
     with tempfile.TemporaryDirectory() as tmp_dir:
         t0 = time.time()
         audio_path = download_audio(video_id, tmp_dir)
-        print(f"[timing] download: {time.time() - t0:.1f}s")
+        logger.info("WHISPER timing | stage=download | duration=%.1fs", time.time() - t0)
 
         model = get_model()
 
@@ -47,22 +58,6 @@ def transcribe_with_whisper(video_id: str) -> list[dict]:
             vad_parameters=dict(min_silence_duration_ms=500),
         )
 
-        segments = []
-        for seg in segments_iter:
-            segments.append(
-                {
-                    "start": seg.start,
-                    "end": seg.end,
-                    "start_str": _seconds_to_mmss(seg.start),
-                    "end_str": _seconds_to_mmss(seg.end),
-                    "text": seg.text.strip(),
-                }
-            )
-        print(f"[timing] transcribe: {time.time() - t1:.1f}s")
+        segments = [make_segment(seg.start, seg.end, seg.text) for seg in segments_iter]
+        logger.info("WHISPER timing | stage=transcribe | duration=%.1fs", time.time() - t1)
         return segments
-
-
-def _seconds_to_mmss(seconds: float) -> str:
-    total = int(seconds)
-    m, s = divmod(total, 60)
-    return f"{m:02d}:{s:02d}"
