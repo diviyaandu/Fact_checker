@@ -59,9 +59,10 @@ class Labels(unittest.TestCase):
             self.assertEqual(nli.classify_pairs([("s", "c")]), [])
 
     def test_nli_for_claims_single_batched_call(self):
+        nli._MEMO.clear()
         sources = [src("a.org", 1, 0), src("b.org", 1, 1)]
-        raw = [ENT.probs, CON.probs, NEU.probs]
-        with mock.patch.object(nli, "_predict", return_value=raw) as p, \
+        table = {("snippet 0", "c1"): ENT.probs, ("snippet 1", "c1"): CON.probs, ("snippet 1", "c2"): NEU.probs}
+        with mock.patch.object(nli, "_predict", side_effect=lambda ps: [table[x] for x in ps]) as p, \
                 mock.patch.object(config, "NLI_ENABLED", True):
             out = nli.nli_for_claims([("c1", sources, [0, 1]), ("c2", sources, [1])])
         self.assertEqual(p.call_count, 1)
@@ -130,6 +131,48 @@ class ConfidenceEffect(unittest.TestCase):
         c, bd = conf("TRUE", "contradicts", ENT)
         self.assertEqual(c, 0.0)
         self.assertTrue(bd.get("no_aligned_evidence"))
+
+
+class Optimization(unittest.TestCase):
+    def setUp(self):
+        nli._MEMO.clear()
+
+    def test_top_k_aligned_selection(self):
+        a = scoring.parse_assessments([
+            {"source_index": 0, "relevance": 1, "stance": "supports", "directness": 1},
+            {"source_index": 1, "relevance": 3, "stance": "supports", "directness": 3},
+            {"source_index": 2, "relevance": 3, "stance": "contradicts", "directness": 3},
+            {"source_index": 3, "relevance": 2, "stance": "supports", "directness": 3},
+        ], 4)
+        self.assertEqual(nli.counted_indices(a, "TRUE", 2), [1, 3])
+        self.assertEqual(nli.counted_indices(a, "FALSE", 2), [2])
+        self.assertEqual(len(nli.counted_indices(a, "MISLEADING", 2)), 2)
+        self.assertEqual(len(nli.counted_indices(a)), 4)
+
+    def test_dedup_and_memo_skip_redundant_inference(self):
+        calls = []
+        def fake(pairs):
+            calls.append(list(pairs))
+            return [ENT.probs for _ in pairs]
+        with mock.patch.object(nli, "_predict", side_effect=fake), mock.patch.object(config, "NLI_ENABLED", True):
+            nli.classify_pairs([("s1", "c"), ("s1", "c"), ("s2", "c")])
+            nli.classify_pairs([("s1", "c"), ("s2", "c")])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]), 2)
+
+    def test_scoring_unchanged_by_optimization(self):
+        # same NLI results -> same confidence whether or not extra sources were scored
+        sources = [src(f"d{i}.org", 2, i) for i in range(3)]
+        a = scoring.parse_assessments([{"source_index": i, "relevance": 3, "stance": "supports",
+                                        "directness": 3} for i in range(3)], 3)
+        full = scoring.compute_confidence("TRUE", a, sources, {0: ENT, 1: ENT, 2: ENT})
+        top2 = scoring.compute_confidence("TRUE", a, sources, {0: ENT, 1: ENT})
+        self.assertEqual(full[0], top2[0])
+        self.assertEqual(full[1]["nli"]["adjustment"], top2[1]["nli"]["adjustment"])
+
+    def test_model_loaded_once(self):
+        self.assertIs(nli._load_model, nli._load_model)
+        self.assertEqual(nli._load_model.cache_info().maxsize, 1)
 
 
 class BatchIntegration(unittest.TestCase):

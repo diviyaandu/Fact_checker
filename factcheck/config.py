@@ -40,7 +40,8 @@ BATCH_SIZE = 2                      # claims per Groq fact-check call
 NLI_ENABLED = os.getenv("NLI_ENABLED", "1").lower() not in ("0", "false", "no")
 NLI_MODEL = os.getenv("NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
 NLI_DEVICE = os.getenv("NLI_DEVICE", "cpu")
-NLI_BATCH_SIZE = 8                  # (claim, snippet) pairs per forward pass
+NLI_MAX_PAIRS_PER_CLAIM = 2         # NLI runs only on the top-N aligned snippets per claim
+NLI_BATCH_SIZE = 16                 # (claim, snippet) pairs per forward pass
 NLI_MAX_LENGTH = 512                # tokens; the snippet (premise) is truncated first
 
 # ---- Transcription ---------------------------------------------------------

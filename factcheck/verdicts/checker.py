@@ -81,7 +81,8 @@ def fact_check_claims_batch(items: list[tuple[str, list[Source]]]) -> list[Verdi
     for (claim_text, sources), obj in zip(items, matched):
         idxs = []
         if obj is not None and obj.get("verdict") != "UNVERIFIABLE":
-            idxs = counted_indices(parse_assessments(obj.get("source_assessments"), len(sources)))
+            idxs = counted_indices(parse_assessments(obj.get("source_assessments"), len(sources)),
+                       obj.get("verdict"), config.NLI_MAX_PAIRS_PER_CLAIM)
         requests.append((claim_text, sources, idxs))
     nli_by_item = nli_for_claims(requests)
 

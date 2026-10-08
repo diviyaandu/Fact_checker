@@ -55,12 +55,16 @@ def source_agreement(stance: str, result: NLIResult) -> float:
     return 0.0 if abs(a) < NLI_DEADZONE else a
 
 
-def counted_indices(assessments) -> list[int]:
-    """Sources the confidence formula counts (same filter as confidence.py)."""
-    return [
-        a.source_index for a in assessments
-        if a.relevance >= MIN_RATING and a.directness >= MIN_RATING and a.stance != "neutral"
-    ]
+def counted_indices(assessments, verdict: str | None = None, limit: int | None = None) -> list[int]:
+    """Sources worth running NLI on: counted by confidence.py (same filter), aligned with the
+    verdict (only aligned sources feed the NLI adjustment), best `limit` by relevance then
+    directness (stable, so the credibility-ranked source order breaks ties)."""
+    want = {"TRUE": "supports", "FALSE": "contradicts"}.get(verdict)
+    sel = [a for a in assessments
+           if a.relevance >= MIN_RATING and a.directness >= MIN_RATING and a.stance != "neutral"
+           and (want is None or a.stance == want)]
+    sel.sort(key=lambda a: (-a.relevance, -a.directness))
+    return [a.source_index for a in (sel[:limit] if limit else sel)]
 
 
 # ---- model (lazy, cached) ----------------------------------------------------
@@ -102,12 +106,21 @@ def _predict(pairs: list[tuple[str, str]]) -> list[dict]:
     return out
 
 
+_MEMO: dict = {}   # (model, premise, hypothesis) -> probs; process-wide, survives Streamlit reruns
+
+
 def classify_pairs(pairs: list[tuple[str, str]]) -> list[NLIResult]:
-    """(snippet, claim) pairs -> NLIResult list. [] if NLI is disabled/unavailable."""
+    """(snippet, claim) pairs -> NLIResult list. [] if NLI is disabled/unavailable.
+    Memoised and de-duplicated; only unseen pairs hit the model, shortest first (less padding)."""
     if not pairs or not config.NLI_ENABLED:
         return []
     try:
-        return [result_from_probs(p) for p in _predict(pairs)]
+        keys = [(config.NLI_MODEL, p, h) for p, h in pairs]
+        todo = sorted({k for k in keys if k not in _MEMO}, key=lambda k: len(k[1]) + len(k[2]))
+        if todo:
+            for k, probs in zip(todo, _predict([(k[1], k[2]) for k in todo])):
+                _MEMO[k] = probs
+        return [result_from_probs(_MEMO[k]) for k in keys]
     except Exception as exc:  # missing deps, download failure, OOM ...
         logger.warning("NLI | unavailable, skipping | %s: %s", type(exc).__name__, exc)
         return []

@@ -129,7 +129,7 @@ Edge cases, handled explicitly:
 
 ### NLI second opinion
 
-A local MNLI model independently judges every counted `(claim, source snippet)` pair
+A local MNLI model independently judges the strongest `(claim, source snippet)` pairs
 (premise = snippet, hypothesis = claim). Its agreement with the LLM's stance nudges the
 confidence up or down. **The LLM never sets the final number**, and the NLI model never changes
 the verdict label.
@@ -152,7 +152,7 @@ partial      a = 0
 |a| < 0.20   a = 0        (neutral / ambiguous NLI gives no boost)
 ```
 
-Agreement is averaged over aligned sources, weighted by the same mass `w`, then applied:
+Agreement is averaged over the NLI-scored aligned sources (at most 2 per claim), weighted by the same mass `w`, then applied:
 
 ```
 A    = Σ(w·a) / Σ(w)
@@ -161,6 +161,12 @@ adj  = +0.08 · A   if A ≥ 0        (max boost +0.08)
 confidence = clamp( min(raw + adj, 0.60 if conflict-capped), 0, 0.95 )
 ```
 
+- **Speed:** NLI runs only on the top `NLI_MAX_PAIRS_PER_CLAIM` (default **2**) aligned sources per
+  claim, ranked by relevance then directness (aligned = `supports` for TRUE, `contradicts` for FALSE,
+  any counted stance for PARTIALLY TRUE / MISLEADING). All pairs in a Groq batch go through one
+  batched call, sorted by length to reduce padding. Identical `(snippet, claim)` pairs are
+  inferred once and remembered for the life of the process, so reruns skip inference. The model is
+  loaded once per process.
 - Disagreement costs more than agreement earns, on purpose.
 - The conflict cap and the 0.95 ceiling still apply after the adjustment.
 - NLI only looks at aligned sources, so it can't rescue a verdict with no aligned evidence.
@@ -263,7 +269,8 @@ To skip NLI entirely, set `NLI_ENABLED=0`.
 | `NLI_ENABLED` | `.env` / shell | `1` | `0` skips NLI; scoring falls back to the original formula |
 | `NLI_MODEL` | `.env` / shell | `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | any 3-way MNLI checkpoint; label order is read from the model config |
 | `NLI_DEVICE` | `.env` / shell | `cpu` | e.g. `cuda` if available |
-| `NLI_BATCH_SIZE`, `NLI_MAX_LENGTH` | `factcheck/config.py` | 8 / 512 | pairs per forward pass / max tokens (snippet truncated first) |
+| `NLI_MAX_PAIRS_PER_CLAIM` | `factcheck/config.py` | 2 | top aligned snippets per claim sent to NLI |
+| `NLI_BATCH_SIZE`, `NLI_MAX_LENGTH` | `factcheck/config.py` | 16 / 512 | pairs per forward pass / max tokens (snippet truncated first) |
 | `ANALYZE_COOLDOWN_SECONDS` | shell environment | `60` | `0` disables the cooldown. Set it in your terminal before launching, e.g. `ANALYZE_COOLDOWN_SECONDS=30 streamlit run app.py` (PowerShell: `$env:ANALYZE_COOLDOWN_SECONDS=30; streamlit run app.py`) |
 | `MAX_CLAIMS` | `factcheck/config.py` | 5 | hard cap on claims per video |
 | `MAX_RESULTS_PER_QUERY`, `MAX_SOURCES_PER_CLAIM`, `MAX_CONCURRENT_SEARCHES`, `MAX_SNIPPET_CHARS` | `factcheck/config.py` | 3 / 5 / 2 / 800 | evidence retrieval limits |
@@ -355,7 +362,7 @@ model are replaced with fakes (`NLI_ENABLED=0` is set for the test run, so the r
 | `test_claims.py` | claim validation, real timestamps, the 5-claim cap, query fallbacks, JSON retry |
 | `test_evidence.py` | de-duplication, caps, ranking, metadata, concurrency limit, failure handling |
 | `test_verdicts.py` | prompt layout, citation validation, batching, retry, reordering |
-| `test_nli.py` | NLI labels, Groq↔NLI mapping, agreement/disagreement effect, 0–0.95 bound, conflict cap, no-NLI fallback (model mocked) |
+| `test_nli.py` | NLI labels, Groq↔NLI mapping, agreement/disagreement effect, 0–0.95 bound, conflict cap, no-NLI fallback, top-2 selection, de-dup/memoisation, scoring unchanged by the optimisation (model mocked) |
 | `test_transcript.py` | URL parsing, segment format, official captions |
 | `test_cache_check.py` | the "fully cached" check behind the cooldown bypass |
 | `test_ui.py` | cooldown lifecycle, cached bypass, fading notice |
