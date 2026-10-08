@@ -21,6 +21,7 @@ def install() -> None:
         sys.path.insert(0, PROJECT_ROOT)
     os.environ.setdefault("GROQ_API_KEY", "test-key")
     os.environ.setdefault("TAVILY_API_KEY", "test-key")
+    os.environ.setdefault("NLI_ENABLED", "0")   # never load the real model in tests
 
     for name in _HEAVY:
         try:

@@ -7,6 +7,7 @@ confidence.py, using the weights/thresholds in constants.py.
 
 from factcheck.scoring.assessments import SourceAssessment, parse_assessments
 from factcheck.scoring.confidence import compute_confidence
+from factcheck.scoring.nli import NLIResult, nli_for_claims
 from factcheck.scoring.constants import (
     CONFLICT_CAP,
     CONFLICT_DOMINANCE_THRESHOLD,
@@ -20,6 +21,8 @@ __all__ = [
     "SourceAssessment",
     "parse_assessments",
     "compute_confidence",
+    "NLIResult",
+    "nli_for_claims",
     "CONFLICT_CAP",
     "CONFLICT_DOMINANCE_THRESHOLD",
     "FORMULA_VERSION",

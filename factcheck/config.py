@@ -33,5 +33,15 @@ MAX_SNIPPET_CHARS = 800
 # ---- Verdicts --------------------------------------------------------------
 BATCH_SIZE = 2                      # claims per Groq fact-check call
 
+# ---- NLI second opinion (local, no API call) ---------------------------------
+# NOTE: there is no official "microsoft/deberta-v3-base-mnli" checkpoint; this is
+# the DeBERTa-v3-base MNLI(+FEVER+ANLI) checkpoint. Label order is read from the
+# model config, so any 3-way MNLI model can be swapped in via NLI_MODEL.
+NLI_ENABLED = os.getenv("NLI_ENABLED", "1").lower() not in ("0", "false", "no")
+NLI_MODEL = os.getenv("NLI_MODEL", "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli")
+NLI_DEVICE = os.getenv("NLI_DEVICE", "cpu")
+NLI_BATCH_SIZE = 8                  # (claim, snippet) pairs per forward pass
+NLI_MAX_LENGTH = 512                # tokens; the snippet (premise) is truncated first
+
 # ---- Transcription ---------------------------------------------------------
 WHISPER_MODEL_SIZE = "tiny"

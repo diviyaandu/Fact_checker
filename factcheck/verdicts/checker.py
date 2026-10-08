@@ -10,6 +10,8 @@ separately with fact_check_no_sources().
 from factcheck import config, llm
 from factcheck.logging_utils import logger
 from factcheck.models import Source, Verdict
+from factcheck.scoring import nli_for_claims, parse_assessments
+from factcheck.scoring.nli import counted_indices
 from factcheck.verdicts.parsing import (
     fallback_invalid_verdict,
     match_objects_to_items,
@@ -74,6 +76,15 @@ def fact_check_claims_batch(items: list[tuple[str, list[Source]]]) -> list[Verdi
 
     matched = match_objects_to_items(parsed_list, len(items))
 
+    # One batched local NLI pass over every counted (claim, snippet) pair.
+    requests = []
+    for (claim_text, sources), obj in zip(items, matched):
+        idxs = []
+        if obj is not None and obj.get("verdict") != "UNVERIFIABLE":
+            idxs = counted_indices(parse_assessments(obj.get("source_assessments"), len(sources)))
+        requests.append((claim_text, sources, idxs))
+    nli_by_item = nli_for_claims(requests)
+
     verdicts = []
     for i, (_claim_text, sources) in enumerate(items):
         obj = matched[i]
@@ -81,6 +92,6 @@ def fact_check_claims_batch(items: list[tuple[str, list[Source]]]) -> list[Verdi
             logger.warning("BATCH missing result | claim_index=%d", i)
             verdicts.append(fallback_invalid_verdict())
         else:
-            verdicts.append(validate_and_verify(obj, sources))
+            verdicts.append(validate_and_verify(obj, sources, nli_by_item[i]))
 
     return verdicts

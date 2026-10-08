@@ -6,7 +6,8 @@ An AI-assisted fact-checking prototype. Paste a YouTube link and it:
 2. picks out up to **5 checkable factual claims**,
 3. searches the web for evidence on each claim,
 4. asks an LLM to judge what each source says, and
-5. returns a **verdict** and a **confidence score** for every claim, with the sources it relied on.
+5. cross-checks the LLM's reading of each source with a **local NLI model** (no API call), and
+6. returns a **verdict** and a **confidence score** for every claim, with the sources it relied on.
 
 > **This is an academic prototype, not a production system.** Verdicts reflect the
 > strength of the *retrieved evidence*, not absolute truth, and the confidence score
@@ -32,8 +33,11 @@ Evidence search ──── Tavily, up to 3 queries per claim, run in parallel
 Verdicts ──── Groq LLM, 2 claims per call. For every source it returns structured
    │          judgments (relevance, stance, directness) and a verdict. No confidence number.
    ▼
-Confidence ──── computed in Python from those judgments + source credibility
-   │
+NLI second opinion ──── local DeBERTa MNLI judges each (claim, snippet) pair as
+   │                        entailment / neutral / contradiction (one batched call, CPU)
+   ▼
+Confidence ──── computed in Python from the judgments + source credibility
+   │            + a small, bounded adjustment for NLI agreement with the LLM's stance
    ▼
 Streamlit UI ──── verdict, confidence bar, summary, explanation, cited sources
 ```
@@ -123,6 +127,49 @@ Edge cases, handled explicitly:
 - Two sources from the same registrable domain (e.g. `news.bbc.co.uk` and `www.bbc.co.uk`)
   count as **one** independent source.
 
+### NLI second opinion
+
+A local MNLI model independently judges every counted `(claim, source snippet)` pair
+(premise = snippet, hypothesis = claim). Its agreement with the LLM's stance nudges the
+confidence up or down. **The LLM never sets the final number**, and the NLI model never changes
+the verdict label.
+
+The LLM stance is mapped to the same three labels:
+
+| Groq stance | NLI label it should match |
+|---|---|
+| `supports` | entailment |
+| `contradicts` | contradiction |
+| `partial` | neutral (no agreement signal) |
+| `neutral` | neutral (not counted) |
+
+Per aligned source, agreement `a` is in [-1, 1]:
+
+```
+supports     a = P(entailment)    − P(contradiction)
+contradicts  a = P(contradiction) − P(entailment)
+partial      a = 0
+|a| < 0.20   a = 0        (neutral / ambiguous NLI gives no boost)
+```
+
+Agreement is averaged over aligned sources, weighted by the same mass `w`, then applied:
+
+```
+A    = Σ(w·a) / Σ(w)
+adj  = +0.08 · A   if A ≥ 0        (max boost +0.08)
+       +0.15 · A   if A < 0        (max penalty −0.15)
+confidence = clamp( min(raw + adj, 0.60 if conflict-capped), 0, 0.95 )
+```
+
+- Disagreement costs more than agreement earns, on purpose.
+- The conflict cap and the 0.95 ceiling still apply after the adjustment.
+- NLI only looks at aligned sources, so it can't rescue a verdict with no aligned evidence.
+- If NLI is disabled or unavailable (missing packages, download failure), the adjustment is 0 and
+  the score is exactly the original formula. The failure is logged, not raised.
+- Per-source NLI labels and probabilities are in `confidence_breakdown["per_source"][i]["nli"]`
+  and the aggregate is in `confidence_breakdown["nli"]` (`agreement`, `adjustment`, `sources_used`).
+  Nothing in the UI changed, and the cache shapes are unchanged.
+
 **Worked example** — three sources back a TRUE verdict: a Tier-1 source (relevance 3, directness 3),
 a Tier-2 source (3, 2) and a Tier-3 source (2, 2), from three different domains:
 
@@ -132,6 +179,8 @@ a Tier-2 source (3, 2) and a Tier-3 source (2, 2), from three different domains:
 
 Each claim card in the app has a **"How was this confidence calculated?"** expander showing
 these components, and the same numbers are written to the log (see [Logging](#logging)).
+
+The worked example above is the score *before* the NLI adjustment.
 
 > The weights and thresholds are heuristic design choices, not fitted to data. They are all
 > in one place, `factcheck/scoring/constants.py`, and are easy to tune. The score expresses how well
@@ -165,7 +214,8 @@ A small JSON file at `.cache/fact_checker_cache.json` stores three things:
 
 Caching speeds up demos and makes evaluation fair: you can re-run the same claims and evidence
 while changing only one stage. Results cached before the confidence rewrite keep their old
-Groq-assigned numbers until you clear the cache.
+Groq-assigned numbers until you clear the cache. Likewise, results cached before NLI was added
+have no NLI data and keep their old confidence until you clear the cache or turn off **Use cached results**.
 
 ---
 
@@ -195,6 +245,14 @@ streamlit run app.py
 
 (Needs Streamlit ≥ 1.39. The first Whisper fallback downloads the small `tiny` model.)
 
+**NLI model:** `requirements.txt` includes `torch`, `torchvision`, `transformers` and
+`sentencepiece`. The first analysis downloads the NLI model (about 0.7 GB, cached by Hugging Face
+afterwards) and loads it once per process, so that first claim is slower. It runs on CPU and needs
+roughly 1.5 GB of RAM. `torchvision` must match your `torch` version (e.g. `torch 2.14.1` ↔
+`torchvision 0.29.1`); check with
+`python -c "import torch, torchvision, transformers; print(torch.__version__, torchvision.__version__, transformers.__version__)"`.
+To skip NLI entirely, set `NLI_ENABLED=0`.
+
 ### Settings
 
 | Setting | Where | Default | Notes |
@@ -202,12 +260,16 @@ streamlit run app.py
 | `GROQ_API_KEY`, `TAVILY_API_KEY` | `.env` | — | required |
 | `GROQ_MODEL` | `.env` | `openai/gpt-oss-120b` | model used for verdicts (claim extraction is fixed to the same default) |
 | `LOG_LEVEL` | `.env` | `INFO` | `DEBUG` also logs per-source scoring rows |
+| `NLI_ENABLED` | `.env` / shell | `1` | `0` skips NLI; scoring falls back to the original formula |
+| `NLI_MODEL` | `.env` / shell | `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` | any 3-way MNLI checkpoint; label order is read from the model config |
+| `NLI_DEVICE` | `.env` / shell | `cpu` | e.g. `cuda` if available |
+| `NLI_BATCH_SIZE`, `NLI_MAX_LENGTH` | `factcheck/config.py` | 8 / 512 | pairs per forward pass / max tokens (snippet truncated first) |
 | `ANALYZE_COOLDOWN_SECONDS` | shell environment | `60` | `0` disables the cooldown. Set it in your terminal before launching, e.g. `ANALYZE_COOLDOWN_SECONDS=30 streamlit run app.py` (PowerShell: `$env:ANALYZE_COOLDOWN_SECONDS=30; streamlit run app.py`) |
 | `MAX_CLAIMS` | `factcheck/config.py` | 5 | hard cap on claims per video |
 | `MAX_RESULTS_PER_QUERY`, `MAX_SOURCES_PER_CLAIM`, `MAX_CONCURRENT_SEARCHES`, `MAX_SNIPPET_CHARS` | `factcheck/config.py` | 3 / 5 / 2 / 800 | evidence retrieval limits |
 | `BATCH_SIZE` | `factcheck/config.py` | 2 | claims per Groq verdict call |
 | `WHISPER_MODEL_SIZE` | `factcheck/config.py` | `tiny` | speech-to-text model |
-| scoring weights, caps | `factcheck/scoring/constants.py` | see above | |
+| scoring weights, caps, NLI boost/penalty/dead zone | `factcheck/scoring/constants.py` | see above | |
 | UI cooldown / notice timing | `ui/config.py` | 60 s / 3.5 s | |
 
 ---
@@ -252,7 +314,8 @@ factcheck/              the whole backend (no Streamlit anywhere in here)
   scoring/                deterministic confidence
     constants.py            weights, tier credibility, caps
     assessments.py          the LLM's per-source judgments + validation
-    confidence.py           the formula
+    confidence.py           the formula (incl. the NLI adjustment)
+    nli.py                  local NLI model (lazy, cached), stance mapping, agreement
   pipeline/               orchestration + caching - the only API the UI uses
     transcripts.py          transcript cache -> captions -> Whisper
     claims.py               claims cache / extract / save
@@ -283,8 +346,8 @@ only talks to `factcheck.pipeline` (plus the URL helpers in `factcheck.transcrip
 python -m unittest discover -s tests -v
 ```
 
-The tests need no API keys or network access - Groq, Tavily, YouTube and Streamlit are replaced
-with fakes.
+The tests need no API keys or network access - Groq, Tavily, YouTube, Streamlit and the NLI
+model are replaced with fakes (`NLI_ENABLED=0` is set for the test run, so the real model is never loaded).
 
 | File | Covers |
 |---|---|
@@ -292,6 +355,7 @@ with fakes.
 | `test_claims.py` | claim validation, real timestamps, the 5-claim cap, query fallbacks, JSON retry |
 | `test_evidence.py` | de-duplication, caps, ranking, metadata, concurrency limit, failure handling |
 | `test_verdicts.py` | prompt layout, citation validation, batching, retry, reordering |
+| `test_nli.py` | NLI labels, Groq↔NLI mapping, agreement/disagreement effect, 0–0.95 bound, conflict cap, no-NLI fallback (model mocked) |
 | `test_transcript.py` | URL parsing, segment format, official captions |
 | `test_cache_check.py` | the "fully cached" check behind the cooldown bypass |
 | `test_ui.py` | cooldown lifecycle, cached bypass, fading notice |
@@ -302,5 +366,8 @@ with fakes.
 - The LLM's per-source judgments are consistent but not perfectly deterministic (low temperature,
   not zero); only the arithmetic on top of them is.
 - Claim extraction depends on transcript quality; Whisper's `tiny` model trades accuracy for speed.
+- NLI sees the same short snippets the LLM does. MNLI models can be wrong on numbers, dates,
+  negation and claims that need outside context, so NLI is a bounded second opinion
+  (−0.15 to +0.08), not a verifier.
 - Maximum 5 claims per video, by design.
 - Heuristic weights and credibility tiers reflect design judgment, not empirical calibration.

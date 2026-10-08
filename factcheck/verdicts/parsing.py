@@ -41,7 +41,7 @@ def unverifiable_no_evidence(
     return verdict
 
 
-def validate_and_verify(parsed_obj: dict, sources: list[Source]) -> Verdict:
+def validate_and_verify(parsed_obj: dict, sources: list[Source], nli_results: dict | None = None) -> Verdict:
     """Builds a Verdict from one parsed LLM object, restricted to citations
     that actually match this claim's own retrieved sources."""
 
@@ -82,7 +82,7 @@ def validate_and_verify(parsed_obj: dict, sources: list[Source]) -> Verdict:
     # Deterministic confidence from the LLM's structured per-source factors.
     if verdict.verdict != "UNVERIFIABLE":
         assessments = parse_assessments(parsed_obj.get("source_assessments"), len(sources))
-        confidence, breakdown = compute_confidence(verdict.verdict, assessments, sources)
+        confidence, breakdown = compute_confidence(verdict.verdict, assessments, sources, nli_results)
 
         if breakdown.get("no_aligned_evidence"):
             # Verdict isn't backed by any usable assessed evidence (e.g. TRUE

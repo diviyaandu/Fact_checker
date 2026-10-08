@@ -37,7 +37,15 @@ Four components, each in [0, 1]:
     raw        = 0.20*relevance + 0.25*credibility + 0.35*strength + 0.20*agreement
     conflict   : TRUE/FALSE with opposing evidence and dominance < 0.75
                  -> raw capped at CONFLICT_CAP (0.60)
-    confidence = clamp(raw, 0, MAX_CONFIDENCE=0.95)
+    nli_adj    : optional NLI second opinion (scoring/nli.py), aligned sources only
+                 a_i  = per-source agreement of NLI with the Groq stance, in [-1, 1]
+                        (supports: P(ent)-P(con); contradicts: P(con)-P(ent);
+                         partial/neutral: 0; |a_i| < NLI_DEADZONE -> 0)
+                 A    = sum(w_i * a_i) / sum(w_i)
+                 adj  = NLI_MAX_BOOST * A     if A >= 0
+                        NLI_MAX_PENALTY * A   if A < 0
+                 no NLI results -> adj = 0 (formula identical to v1)
+    confidence = clamp(min(raw + adj, CONFLICT_CAP if conflict), 0, MAX_CONFIDENCE=0.95)
 
 Edge cases:
     UNVERIFIABLE                      -> 0.0
@@ -50,6 +58,7 @@ retrieval quality; they are heuristic design choices, tunable in one place.
 
 from factcheck.logging_utils import logger
 from factcheck.scoring.assessments import SourceAssessment
+from factcheck.scoring.nli import NLIResult, source_agreement, stance_to_nli_label
 from factcheck.scoring.constants import (
     AGREEMENT_SATURATION,
     CONFLICT_CAP,
@@ -59,6 +68,8 @@ from factcheck.scoring.constants import (
     MAX_CONFIDENCE,
     MIN_RATING,
     MIXED_VERDICTS,
+    NLI_MAX_BOOST,
+    NLI_MAX_PENALTY,
     RATING_MAX,
     TIER_CREDIBILITY,
     WEIGHTS,
@@ -84,7 +95,12 @@ def _safe_mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def compute_confidence(verdict: str, assessments: list[SourceAssessment], sources) -> tuple[float, dict]:
+def compute_confidence(
+    verdict: str,
+    assessments: list[SourceAssessment],
+    sources,
+    nli_results: dict[int, NLIResult] | None = None,
+) -> tuple[float, dict]:
     """Returns (confidence, breakdown). breakdown is JSON-serialisable (it is
     cached with the verdict and shown in the UI/logs)."""
     breakdown: dict = {"formula_version": FORMULA_VERSION, "verdict": verdict}
@@ -110,8 +126,17 @@ def compute_confidence(verdict: str, assessments: list[SourceAssessment], source
             "R": round(R, 3), "C": round(C, 3), "S": round(S, 3),
             "mass": round(w, 4), "counted": used,
         })
+        nli = (nli_results or {}).get(a.source_index)
+        if nli is not None:
+            per_source[-1]["nli"] = {
+                **nli.to_dict(),
+                "groq_as_nli": stance_to_nli_label(a.stance),
+                "agrees": nli.label == stance_to_nli_label(a.stance),
+                "agreement": round(source_agreement(a.stance, nli), 3),
+            }
         if used:
-            counted.append({"R": R, "C": C, "S": S, "w": w, "stance": a.stance, "domain": _domain(src)})
+            counted.append({"R": R, "C": C, "S": S, "w": w, "stance": a.stance,
+                            "domain": _domain(src), "idx": a.source_index})
 
     breakdown["per_source"] = per_source
     mass = {s: sum(c["w"] for c in counted if c["stance"] == s) for s in ("supports", "contradicts", "partial")}
@@ -151,6 +176,19 @@ def compute_confidence(verdict: str, assessments: list[SourceAssessment], source
     raw = sum(WEIGHTS[k] * components[k] for k in WEIGHTS)
     weighted_sum = raw
 
+    # NLI second opinion: mass-weighted agreement over aligned sources that have a result.
+    nli_info = None
+    nli_adj = 0.0
+    scored = [(c["w"], source_agreement(c["stance"], nli_results[c["idx"]]))
+              for c in aligned if nli_results and c["idx"] in nli_results]
+    wsum = sum(w for w, _ in scored)
+    if wsum > 0:
+        agreement = sum(w * a for w, a in scored) / wsum
+        nli_adj = (NLI_MAX_BOOST if agreement >= 0 else NLI_MAX_PENALTY) * agreement
+        nli_info = {"agreement": round(agreement, 3), "adjustment": round(nli_adj, 4),
+                    "sources_used": len(scored)}
+    raw += nli_adj
+
     # Conflict handling: a clear verdict with substantial opposing evidence
     # cannot be high-confidence, however credible the supporting sources are.
     conflict_capped = (not mixed) and opposing_mass > 0 and dominance < CONFLICT_DOMINANCE_THRESHOLD
@@ -169,6 +207,8 @@ def compute_confidence(verdict: str, assessments: list[SourceAssessment], source
         "conflict_capped": conflict_capped,
         "confidence": confidence,
     })
+    if nli_info:
+        breakdown["nli"] = nli_info
 
     for row in per_source:
         logger.debug("SCORE source | verdict=%s | %s", verdict, row)
