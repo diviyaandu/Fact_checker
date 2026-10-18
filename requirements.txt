@@ -9,3 +9,4 @@ youtube-transcript-api
 torch
 transformers>=4.40
 sentencepiece
+openpyxl
