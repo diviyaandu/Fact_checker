@@ -21,8 +21,7 @@ Only sources with relevance >= 1, directness >= 1 and stance != neutral are
 counted. "Aligned" sources are those whose stance matches the verdict:
     TRUE            -> stance "supports"
     FALSE           -> stance "contradicts"
-    PARTIALLY TRUE /
-    MISLEADING      -> every counted source (mixed evidence is the signal)
+    PARTIALLY TRUE  -> every counted source (mixed evidence is the signal)
 
 Four components, each in [0, 1]:
     relevance   = mean(R_i) over aligned sources

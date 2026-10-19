@@ -27,15 +27,15 @@ class MetricsTests(unittest.TestCase):
         self.assertAlmostEqual(m["per_class"]["TRUE"]["f1"], 2 / 3)
         self.assertAlmostEqual(m["per_class"]["FALSE"]["precision"], 2 / 3)
         self.assertAlmostEqual(m["per_class"]["FALSE"]["f1"], 0.8)
-        for c in ("PARTIALLY TRUE", "MISLEADING", "UNVERIFIABLE"):
+        for c in ("PARTIALLY TRUE", "UNVERIFIABLE"):
             self.assertEqual(m["per_class"][c]["f1"], 0.0)  # absent classes count as 0
-        self.assertAlmostEqual(m["macro_f1"], (2 / 3 + 0.8) / 5)  # all 5 classes averaged
+        self.assertAlmostEqual(m["macro_f1"], (2 / 3 + 0.8) / 4)  # all 4 classes averaged
         self.assertAlmostEqual(m["accuracy"], 0.6)
 
     def test_confusion_matrix_shape_and_orientation(self):
         cm = confusion_matrix(["TRUE", "FALSE"], ["FALSE", "FALSE"])
-        self.assertEqual(len(cm), 5)
-        self.assertTrue(all(len(r) == 5 for r in cm))
+        self.assertEqual(len(cm), 4)
+        self.assertTrue(all(len(r) == 4 for r in cm))
         self.assertEqual(cm[0][1], 1)  # truth TRUE, predicted FALSE
         self.assertEqual(cm[1][1], 1)
         self.assertEqual(sum(map(sum, cm)), 2)
@@ -74,7 +74,7 @@ class RunnerTests(unittest.TestCase):
         with open(self.data, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["Claim_ID", "Claim", "Ground_Truth", "System_Prediction", "Confidence", "Correct", "Notes"])
-            for i, lab in enumerate(LABELS * 2, start=1):
+            for i, lab in enumerate(LABELS * 2 + LABELS[:2], start=1):
                 w.writerow([f"C{i}", f"claim {i}", lab.lower(), "", "", "", "n"])
         self.out = os.path.join(self.tmp, "out")
 
@@ -85,7 +85,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_end_to_end_resume_and_dataset_untouched(self):
         before = open(self.data, encoding="utf-8").read()
-        truth = {f"claim {i}": lab for i, lab in enumerate(LABELS * 2, start=1)}
+        truth = {f"claim {i}": lab for i, lab in enumerate(LABELS * 2 + LABELS[:2], start=1)}
         fake, calls = _fake_pipeline(lambda text: (truth[text], True))
 
         with mock.patch("factcheck.pipeline.verdicts.get_claim_verdicts", fake):
@@ -126,3 +126,11 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LegacyAliasTest(unittest.TestCase):
+    def test_misleading_folds_into_partially_true(self):
+        from factcheck.models import Verdict
+        v = Verdict(verdict="MISLEADING", confidence=0.5, summary="s", explanation="e", cited_sources=[])
+        self.assertEqual(v.verdict, "PARTIALLY TRUE")
+        self.assertNotIn("MISLEADING", LABELS)

@@ -8,7 +8,6 @@ VERDICT_COLORS = {
     "TRUE": "🟢",
     "FALSE": "🔴",
     "PARTIALLY TRUE": "🟡",
-    "MISLEADING": "🟠",
     "UNVERIFIABLE": "⚪",
 }
 

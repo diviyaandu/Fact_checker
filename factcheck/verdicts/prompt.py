@@ -53,9 +53,9 @@ verdict:
 
 - TRUE: relevant evidence clearly confirms the claim as stated
 - FALSE: relevant evidence clearly contradicts the claim
-- PARTIALLY TRUE: some elements are accurate but the claim overstates, omits
-  key context, or is only true under specific conditions
-- MISLEADING: technically has some basis but creates a false impression
+- PARTIALLY TRUE: mixed evidence — some elements are accurate, but the claim
+  overstates, omits key context, is only true under specific conditions, or
+  is technically grounded yet creates a false impression
 - UNVERIFIABLE: no relevant sources were found, or they don't provide enough
   information to judge
 

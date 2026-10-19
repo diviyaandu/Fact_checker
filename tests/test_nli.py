@@ -146,7 +146,7 @@ class Optimization(unittest.TestCase):
         ], 4)
         self.assertEqual(nli.counted_indices(a, "TRUE", 2), [1, 3])
         self.assertEqual(nli.counted_indices(a, "FALSE", 2), [2])
-        self.assertEqual(len(nli.counted_indices(a, "MISLEADING", 2)), 2)
+        self.assertEqual(len(nli.counted_indices(a, "PARTIALLY TRUE", 2)), 2)
         self.assertEqual(len(nli.counted_indices(a)), 4)
 
     def test_dedup_and_memo_skip_redundant_inference(self):
