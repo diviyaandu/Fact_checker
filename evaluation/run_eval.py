@@ -205,10 +205,10 @@ def print_report(m: dict) -> None:
         print(f"{label:<16}{c['precision']:>7.3f}{c['recall']:>7.3f}{c['f1']:>7.3f}{c['support']:>5}")
     print(f"\nMACRO F1: {m['macro_f1']:.4f}   accuracy: {m['accuracy']:.4f}   n={m['n']}")
     print("\nConfusion matrix (rows=truth, cols=predicted):")
-    short = ["TRUE", "FALSE", "PART", "MISL", "UNVER"]
-    print(f"{'':<16}" + "".join(f"{s:>7}" for s in short))
+    w = max(len(l) for l in m["labels"]) + 2
+    print(f"{'':<16}" + "".join(f"{l:>{w}}" for l in m["labels"]))
     for label, row in zip(m["labels"], m["confusion_matrix"]):
-        print(f"{label:<16}" + "".join(f"{v:>7}" for v in row))
+        print(f"{label:<16}" + "".join(f"{v:>{w}}" for v in row))
 
 
 # ---- main -------------------------------------------------------------------
