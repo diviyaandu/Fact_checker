@@ -46,11 +46,9 @@ Streamlit UI ──── verdict, confidence bar, summary, explanation, cited s
 
 | Verdict | Meaning |
 |---|---|
-| 🟢 **TRUE** | relevant evidence clearly confirms the claim as stated |
-| 🔴 **FALSE** | relevant evidence clearly contradicts the claim |
-| 🟡 **PARTIALLY TRUE** | some parts are accurate, but it overstates, omits context, or only holds under conditions |
-| 🟠 **MISLEADING** | technically has some basis but creates a false impression |
-| ⚪ **UNVERIFIABLE** | no relevant evidence, or not enough to judge — always confidence **0** |
+| 🟢 **TRUE** | evidence supports the central claim |
+| 🔴 **FALSE** | evidence contradicts the central claim (including overstated or universal wording whose core is refuted) |
+| ⚪ **UNVERIFIABLE** | evidence is insufficient, inconclusive, or unavailable — always confidence **0** |
 
 ### Guard rails on the LLM
 
@@ -102,7 +100,7 @@ For each source, the LLM returns (all on small fixed scales, which are more cons
 Each is normalised to 0–1 and combined with the source's credibility tier into a "mass"
 `w = relevance × credibility × directness`. Only sources that are relevant, direct and
 non-neutral count. Sources whose stance matches the verdict are the *aligned* ones
-(TRUE → `supports`, FALSE → `contradicts`, PARTIALLY TRUE / MISLEADING → all counted sources).
+(TRUE → `supports`, FALSE → `contradicts`,).
 
 Four components, each 0–1:
 
@@ -163,7 +161,7 @@ confidence = clamp( min(raw + adj, 0.60 if conflict-capped), 0, 0.95 )
 
 - **Speed:** NLI runs only on the top `NLI_MAX_PAIRS_PER_CLAIM` (default **2**) aligned sources per
   claim, ranked by relevance then directness (aligned = `supports` for TRUE, `contradicts` for FALSE,
-  any counted stance for PARTIALLY TRUE / MISLEADING). All pairs in a Groq batch go through one
+  ). All pairs in a Groq batch go through one
   batched call, sorted by length to reduce padding. Identical `(snippet, claim)` pairs are
   inferred once and remembered for the life of the process, so reruns skip inference. The model is
   loaded once per process.

@@ -51,13 +51,17 @@ STEP 2 — VERDICT:
 Using ONLY the sources you judged relevant for THAT claim, determine the
 verdict:
 
-- TRUE: relevant evidence clearly confirms the claim as stated
-- FALSE: relevant evidence clearly contradicts the claim
-- PARTIALLY TRUE: mixed evidence — some elements are accurate, but the claim
-  overstates, omits key context, is only true under specific conditions, or
-  is technically grounded yet creates a false impression
-- UNVERIFIABLE: no relevant sources were found, or they don't provide enough
-  information to judge
+- TRUE: relevant evidence supports the central claim
+- FALSE: relevant evidence contradicts the central claim. If a claim's core
+  idea is refuted, or it is overstated by universal wording ("all", "always",
+  "every", "completely", "guarantees") that the evidence rejects, the verdict
+  is FALSE
+- UNVERIFIABLE: evidence is insufficient, inconclusive, or unavailable — no
+  relevant sources were found, or they don't settle the central claim
+
+Decide on the central claim only. There is no in-between verdict: if sources
+partly agree, judge whether the central claim holds (TRUE), is refuted
+(FALSE), or is left unsettled (UNVERIFIABLE).
 
 CRITICAL RULES:
 

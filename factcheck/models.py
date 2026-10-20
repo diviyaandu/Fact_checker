@@ -10,9 +10,7 @@ from factcheck import config
 Category = Literal["Science", "Health", "Technology", "History", "General"]
 ALLOWED_CATEGORIES = list(get_args(Category))
 
-VerdictLabel = Literal["TRUE", "FALSE", "PARTIALLY TRUE", "UNVERIFIABLE"]
-# Backward compatibility: the retired 5th class folds into PARTIALLY TRUE.
-LEGACY_VERDICT_ALIASES = {"MISLEADING": "PARTIALLY TRUE"}
+VerdictLabel = Literal["TRUE", "FALSE", "UNVERIFIABLE"]
 VERDICTS = list(get_args(VerdictLabel))
 
 
@@ -61,9 +59,8 @@ class Verdict(BaseModel):
 
     @field_validator("verdict", mode="before")
     @classmethod
-    def _fold_legacy_verdict(cls, v):
-        v = v.strip().upper() if isinstance(v, str) else v
-        return LEGACY_VERDICT_ALIASES.get(v, v)
+    def _normalise_verdict(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
     # Computed deterministically in scoring/ from the LLM's structured
     # per-source assessments — the LLM never supplies this number.
     confidence: float

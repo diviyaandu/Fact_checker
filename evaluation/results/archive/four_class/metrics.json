@@ -1,0 +1,72 @@
+{
+  "n": 100,
+  "macro_f1": 0.5534421109891122,
+  "accuracy": 0.54,
+  "per_class": {
+    "TRUE": {
+      "precision": 0.9523809523809523,
+      "recall": 1.0,
+      "f1": 0.975609756097561,
+      "support": 20
+    },
+    "FALSE": {
+      "precision": 0.3389830508474576,
+      "recall": 1.0,
+      "f1": 0.5063291139240507,
+      "support": 20
+    },
+    "PARTIALLY TRUE": {
+      "precision": 0.5,
+      "recall": 0.025,
+      "f1": 0.047619047619047616,
+      "support": 40
+    },
+    "UNVERIFIABLE": {
+      "precision": 0.7222222222222222,
+      "recall": 0.65,
+      "f1": 0.6842105263157895,
+      "support": 20
+    }
+  },
+  "labels": [
+    "TRUE",
+    "FALSE",
+    "PARTIALLY TRUE",
+    "UNVERIFIABLE"
+  ],
+  "confusion_matrix": [
+    [
+      20,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      20,
+      0,
+      0
+    ],
+    [
+      0,
+      34,
+      1,
+      5
+    ],
+    [
+      1,
+      5,
+      1,
+      13
+    ]
+  ],
+  "meta": {
+    "timestamp_utc": "2026-10-20T05:30:46+00:00",
+    "git_commit": "d270ef4",
+    "verdict_model": "openai/gpt-oss-120b",
+    "batch_size": 2,
+    "confidence_formula_version": "v2",
+    "search_queries": "pipeline fallback queries (not LLM-generated)",
+    "rows_with_errors": 0
+  }
+}

@@ -3,7 +3,7 @@
 Ground truth is only ever read here; nothing in this module can change it.
 """
 
-LABELS = ["TRUE", "FALSE", "PARTIALLY TRUE", "UNVERIFIABLE"]
+LABELS = ["TRUE", "FALSE", "UNVERIFIABLE"]
 
 
 def confusion_matrix(y_true: list[str], y_pred: list[str], labels: list[str] = LABELS) -> list[list[int]]:

@@ -7,7 +7,6 @@ from ui.analysis import verdict_counts
 VERDICT_COLORS = {
     "TRUE": "🟢",
     "FALSE": "🔴",
-    "PARTIALLY TRUE": "🟡",
     "UNVERIFIABLE": "⚪",
 }
 

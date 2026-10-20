@@ -21,7 +21,6 @@ import time
 from datetime import datetime, timezone
 
 from evaluation.metrics import LABELS, compute_metrics
-from factcheck.models import LEGACY_VERDICT_ALIASES
 
 DEFAULT_OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 CHUNK_SIZE = 10  # claims per save point (also bounds work lost on a crash)
@@ -64,7 +63,6 @@ def load_dataset(path: str) -> list[dict]:
     for n, r in enumerate(rows, start=2):  # 2 = first data row in the sheet
         claim_id, claim = r.get("claim_id", ""), r.get("claim", "")
         truth = r.get("ground_truth", "").upper()
-        truth = LEGACY_VERDICT_ALIASES.get(truth, truth)  # legacy MISLEADING -> PARTIALLY TRUE
 
         if not claim_id or not claim:
             problems.append(f"row {n}: missing Claim_ID or Claim")

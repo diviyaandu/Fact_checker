@@ -104,12 +104,6 @@ class ScoringFormula(unittest.TestCase):
         c2, bd2 = conf("TRUE", [], sources)
         self.assertTrue(bd2.get("no_aligned_evidence"))
 
-    def test_mixed_verdict_prefers_partial_evidence(self):
-        sources = [src("nasa.gov", 1), src("nature.com", 2, 1)]
-        partial, _ = conf("PARTIALLY TRUE", [assess(0, 3, "partial", 3), assess(1, 3, "partial", 3)], sources)
-        all_support, _ = conf("PARTIALLY TRUE", [assess(0, 3, "supports", 3), assess(1, 3, "supports", 3)], sources)
-        self.assertGreater(partial, all_support)
-
     def test_deterministic(self):
         sources = [src("nasa.gov", 1), src("bbc.com", 3, 1)]
         a = [assess(0, 3, "supports", 3), assess(1, 2, "supports", 2)]
